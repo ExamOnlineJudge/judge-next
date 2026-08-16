@@ -738,22 +738,6 @@ def discover_installed_languages() -> List[Dict[str, Any]]:
             ],
         },
         {
-            "id": "scratch",
-            "name": "Scratch (Math & Logic IDE)",
-            "monaco": "scratch",
-            "template": "print(\"Hello, World!\")\n",
-            "versions": [
-                {
-                    "id": "scratch3",
-                    "name": "Scratch Blocks",
-                    "toolchains": [
-                        {"id": "scratch_py", "name": "Python 3 Engine", "targetId": "python3"},
-                        {"id": "scratch_js", "name": "JavaScript Engine", "targetId": "js_node26"},
-                    ],
-                },
-            ],
-        },
-        {
             "id": "typescript",
             "name": "TypeScript",
             "monaco": "typescript",
