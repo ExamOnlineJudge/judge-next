@@ -407,11 +407,18 @@ def compile_source(lang: str, code: str, temp_dir: str):
         with open(src, "w", encoding="utf-8") as f: f.write(code)
         return ["/usr/bin/luajit", "-O3", src], None
 
-    # Dart (VM JIT & AOT Engine)
+    # Dart (Direct VM JIT Engine)
     elif l in ("dart", "dartsdk"):
         src = os.path.join(temp_dir, "prog.dart")
         with open(src, "w", encoding="utf-8") as f: f.write(code)
-        return ["/opt/dart-sdk/bin/dart", "run", src], None
+        dart_bin = shutil.which("dart")
+        if not dart_bin:
+            for candidate in ("/opt/dart-sdk/bin/dart", "/usr/lib/dart/bin/dart", "/usr/bin/dart"):
+                if os.path.exists(candidate):
+                    dart_bin = candidate
+                    break
+        dart_bin = dart_bin or "dart"
+        return [dart_bin, "--verbosity=error", src], None
 
     # Kotlin (Kotlin 2.1 K2 Compiler on JDK 21 HotSpot)
     elif l.startswith("kotlin") or l in ("kt", "kotlinc"):

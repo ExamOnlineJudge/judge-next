@@ -433,9 +433,10 @@ def discover_installed_languages() -> List[Dict[str, Any]]:
         })
 
     # 13. Dart
-    has_dart = is_bin_available("dart", "/usr/lib/dart/bin/dart", "/usr/bin/dart")
+    has_dart = is_bin_available("dart", "/opt/dart-sdk/bin/dart", "/usr/lib/dart/bin/dart", "/usr/bin/dart")
     if has_dart:
-        dart_v = get_cmd_version(["dart", "--version"]) or "3.0"
+        dart_bin = shutil.which("dart") or ("/opt/dart-sdk/bin/dart" if os.path.exists("/opt/dart-sdk/bin/dart") else "/usr/bin/dart")
+        dart_v = get_cmd_version([dart_bin, "--version"]) or "3.0"
         installed_langs.append({
             "id": "dart",
             "name": "Dart",
