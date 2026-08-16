@@ -268,7 +268,7 @@ def compile_source(lang: str, code: str, temp_dir: str):
     elif l in ("cs_net", "csharp", "cs", "cs_net8", "cs_net9"):
         dotnet_bin = shutil.which("dotnet")
         if not dotnet_bin:
-            for c in ("/usr/bin/dotnet", "/usr/share/dotnet/dotnet", "/opt/dotnet/dotnet"):
+            for c in ("/opt/dotnet/dotnet", "/usr/share/dotnet/dotnet", "/usr/bin/dotnet"):
                 if os.path.exists(c):
                     dotnet_bin = c
                     break
@@ -281,8 +281,8 @@ def compile_source(lang: str, code: str, temp_dir: str):
                 proj = os.path.join(proj_dir, "csproj.csproj")
                 with open(src, "w", encoding="utf-8") as f: f.write(code)
                 with open(proj, "w", encoding="utf-8") as f:
-                    f.write(f'<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType><TargetFramework>{tfm}</TargetFramework><OptimizationPreference>Speed</OptimizationPreference></PropertyGroup></Project>')
-                p = subprocess.run([dotnet_bin, "build", "-c", "Release", "--nologo", "-v", "q", proj_dir], capture_output=True, text=True, timeout=8)
+                    f.write(f'<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType><TargetFramework>{tfm}</TargetFramework><OptimizationPreference>Speed</OptimizationPreference><UseSharedCompilation>true</UseSharedCompilation><DebugType>none</DebugType></PropertyGroup></Project>')
+                p = subprocess.run([dotnet_bin, "build", "-c", "Release", "--nologo", "-v", "q", proj_dir], capture_output=True, text=True, timeout=10)
                 if p.returncode == 0:
                     dll = os.path.join(proj_dir, "bin", "Release", tfm, "csproj.dll")
                     if os.path.exists(dll):
@@ -302,7 +302,7 @@ def compile_source(lang: str, code: str, temp_dir: str):
     elif l in ("fs_net", "fsharp", "fs", "fs_net8", "fs_net9"):
         dotnet_bin = shutil.which("dotnet")
         if not dotnet_bin:
-            for c in ("/usr/bin/dotnet", "/usr/share/dotnet/dotnet", "/opt/dotnet/dotnet"):
+            for c in ("/opt/dotnet/dotnet", "/usr/share/dotnet/dotnet", "/usr/bin/dotnet"):
                 if os.path.exists(c):
                     dotnet_bin = c
                     break
@@ -315,8 +315,8 @@ def compile_source(lang: str, code: str, temp_dir: str):
                 proj = os.path.join(proj_dir, "fsproj.fsproj")
                 with open(src, "w", encoding="utf-8") as f: f.write(code)
                 with open(proj, "w", encoding="utf-8") as f:
-                    f.write(f'<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType><TargetFramework>{tfm}</TargetFramework><OptimizationPreference>Speed</OptimizationPreference></PropertyGroup><ItemGroup><Compile Include="Program.fs" /></ItemGroup></Project>')
-                p = subprocess.run([dotnet_bin, "build", "-c", "Release", "--nologo", "-v", "q", proj_dir], capture_output=True, text=True, timeout=8)
+                    f.write(f'<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType><TargetFramework>{tfm}</TargetFramework><OptimizationPreference>Speed</OptimizationPreference><EnableDefaultCompileItems>false</EnableDefaultCompileItems><UseSharedCompilation>true</UseSharedCompilation><DebugType>none</DebugType></PropertyGroup><ItemGroup><Compile Include="Program.fs" /></ItemGroup></Project>')
+                p = subprocess.run([dotnet_bin, "build", "-c", "Release", "--nologo", "-v", "q", proj_dir], capture_output=True, text=True, timeout=10)
                 if p.returncode == 0:
                     dll = os.path.join(proj_dir, "bin", "Release", tfm, "fsproj.dll")
                     if os.path.exists(dll):
@@ -337,7 +337,7 @@ def compile_source(lang: str, code: str, temp_dir: str):
     elif l in ("vb_net", "vb", "visualbasic", "vb_net8", "vb_net9"):
         dotnet_bin = shutil.which("dotnet")
         if not dotnet_bin:
-            for c in ("/usr/bin/dotnet", "/usr/share/dotnet/dotnet", "/opt/dotnet/dotnet"):
+            for c in ("/opt/dotnet/dotnet", "/usr/share/dotnet/dotnet", "/usr/bin/dotnet"):
                 if os.path.exists(c):
                     dotnet_bin = c
                     break
@@ -350,8 +350,8 @@ def compile_source(lang: str, code: str, temp_dir: str):
                 proj = os.path.join(proj_dir, "vbproj.vbproj")
                 with open(src, "w", encoding="utf-8") as f: f.write(code)
                 with open(proj, "w", encoding="utf-8") as f:
-                    f.write(f'<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType><TargetFramework>{tfm}</TargetFramework><OptimizationPreference>Speed</OptimizationPreference></PropertyGroup><ItemGroup><Compile Include="Program.vb" /></ItemGroup></Project>')
-                p = subprocess.run([dotnet_bin, "build", "-c", "Release", "--nologo", "-v", "q", proj_dir], capture_output=True, text=True, timeout=8)
+                    f.write(f'<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType><TargetFramework>{tfm}</TargetFramework><OptimizationPreference>Speed</OptimizationPreference><UseSharedCompilation>true</UseSharedCompilation><DebugType>none</DebugType></PropertyGroup></Project>')
+                p = subprocess.run([dotnet_bin, "build", "-c", "Release", "--nologo", "-v", "q", proj_dir], capture_output=True, text=True, timeout=10)
                 if p.returncode == 0:
                     dll = os.path.join(proj_dir, "bin", "Release", tfm, "vbproj.dll")
                     if os.path.exists(dll):
