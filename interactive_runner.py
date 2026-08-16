@@ -945,6 +945,18 @@ def run_interactive():
         return
 
     temp_dir = tempfile.mkdtemp(prefix="eoj_interactive_")
+
+    # Write any custom input files (max 10) to temp directory for file I/O operations
+    files = req.get("files", {})
+    if isinstance(files, dict):
+        for fn, content in list(files.items())[:10]:
+            if isinstance(fn, str) and isinstance(content, str) and fn and "/" not in fn and "\\" not in fn:
+                try:
+                    with open(os.path.join(temp_dir, fn), "w", encoding="utf-8") as f:
+                        f.write(content)
+                except Exception:
+                    pass
+
     cmd, err = compile_source(lang, code, temp_dir)
     if err:
         send_msg("compile_error", {"error": err})
@@ -1137,6 +1149,39 @@ def run_interactive():
         else:
             status = f"Runtime Error (Exit Code {ret})"
             exit_code = ret
+
+        # Collect only generated/updated data workspace files (exclude binaries, headers, source code, project metadata)
+        EXCLUDED_EXTENSIONS = (
+            ".o", ".obj", ".class", ".exe", ".bin", ".pyc", ".tmp", ".dll", ".so", ".dylib",
+            ".pdb", ".rs.bk", ".h", ".hpp", ".hxx", ".inc", ".inl", ".c", ".cpp", ".cc",
+            ".cxx", ".java", ".py", ".cs", ".go", ".rs", ".pas", ".pp", ".ts", ".js",
+            ".kt", ".dart", ".php", ".lua", ".d", ".m", ".asm", ".s", ".ll", ".sh",
+            ".vb", ".fs", ".csproj", ".vbproj", ".fsproj", ".sln", ".user", ".suo"
+        )
+        EXCLUDED_BASENAMES = {"main", "a.out", "solution", "prog", "program", "code", "run"}
+
+        updated_files = {}
+        try:
+            for item in os.listdir(temp_dir):
+                item_path = os.path.join(temp_dir, item)
+                item_lower = item.lower()
+                if (
+                    os.path.isfile(item_path)
+                    and not item_lower.endswith(EXCLUDED_EXTENSIONS)
+                    and item_lower not in EXCLUDED_BASENAMES
+                    and "." in item
+                ):
+                    if os.path.getsize(item_path) <= 1024 * 1024:
+                        try:
+                            with open(item_path, "r", encoding="utf-8", errors="replace") as f:
+                                updated_files[item] = f.read()
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+
+        if updated_files:
+            send_msg("files_updated", {"files": updated_files})
 
         send_msg("exit", {
             "exitCode": exit_code,

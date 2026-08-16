@@ -1,8 +1,9 @@
-FROM ubuntu:24.04
+FROM python:3.12-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PORT=5055
 ENV HOST=0.0.0.0
+ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app
 COPY . /app
