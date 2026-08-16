@@ -264,44 +264,109 @@ def compile_source(lang: str, code: str, temp_dir: str):
         if p.returncode != 0: return None, strip_ansi(p.stderr)
         return ["/usr/bin/mono", "-O=all", exe], None
 
-    # C# (.NET 9)
-    elif l in ("cs_net", "csharp", "cs"):
-        proj_dir = os.path.join(temp_dir, "csproj")
-        os.makedirs(proj_dir, exist_ok=True)
-        src = os.path.join(proj_dir, "Program.cs")
-        proj = os.path.join(proj_dir, "csproj.csproj")
-        with open(src, "w", encoding="utf-8") as f: f.write(code)
-        with open(proj, "w", encoding="utf-8") as f:
-            f.write('<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net9.0</TargetFramework><OptimizationPreference>Speed</OptimizationPreference></PropertyGroup></Project>')
-        p = subprocess.run(["/opt/dotnet/dotnet", "build", "-c", "Release", proj_dir], capture_output=True, text=True)
-        if p.returncode != 0: return None, strip_ansi(p.stdout + p.stderr)
-        return ["/opt/dotnet/dotnet", "run", "--project", proj_dir, "--no-build"], None
+    # C# (.NET / Mono Linux)
+    elif l in ("cs_net", "csharp", "cs", "cs_net8", "cs_net9"):
+        dotnet_bin = shutil.which("dotnet")
+        if not dotnet_bin:
+            for c in ("/usr/bin/dotnet", "/usr/share/dotnet/dotnet", "/opt/dotnet/dotnet"):
+                if os.path.exists(c):
+                    dotnet_bin = c
+                    break
+        if dotnet_bin and os.path.exists(dotnet_bin):
+            try:
+                tfm = "net8.0" if "8" in l else "net9.0"
+                proj_dir = os.path.join(temp_dir, "csproj")
+                os.makedirs(proj_dir, exist_ok=True)
+                src = os.path.join(proj_dir, "Program.cs")
+                proj = os.path.join(proj_dir, "csproj.csproj")
+                with open(src, "w", encoding="utf-8") as f: f.write(code)
+                with open(proj, "w", encoding="utf-8") as f:
+                    f.write(f'<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType><TargetFramework>{tfm}</TargetFramework><OptimizationPreference>Speed</OptimizationPreference></PropertyGroup></Project>')
+                p = subprocess.run([dotnet_bin, "build", "-c", "Release", "--nologo", "-v", "q", proj_dir], capture_output=True, text=True, timeout=8)
+                if p.returncode == 0:
+                    dll = os.path.join(proj_dir, "bin", "Release", tfm, "csproj.dll")
+                    if os.path.exists(dll):
+                        return [dotnet_bin, "exec", dll], None
+            except Exception:
+                pass
 
-    # F# (.NET 9)
-    elif l in ("fs_net", "fsharp", "fs"):
-        proj_dir = os.path.join(temp_dir, "fsproj")
-        os.makedirs(proj_dir, exist_ok=True)
-        src = os.path.join(proj_dir, "Program.fs")
-        proj = os.path.join(proj_dir, "fsproj.fsproj")
+        # Fast Native Linux Mono C# Compiler (< 0.05s)
+        src = os.path.join(temp_dir, "Program.cs")
+        exe = os.path.join(temp_dir, "Program.exe")
         with open(src, "w", encoding="utf-8") as f: f.write(code)
-        with open(proj, "w", encoding="utf-8") as f:
-            f.write('<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net9.0</TargetFramework><OptimizationPreference>Speed</OptimizationPreference></PropertyGroup><ItemGroup><Compile Include="Program.fs" /></ItemGroup></Project>')
-        p = subprocess.run(["/opt/dotnet/dotnet", "build", "-c", "Release", proj_dir], capture_output=True, text=True)
-        if p.returncode != 0: return None, strip_ansi(p.stdout + p.stderr)
-        return ["/opt/dotnet/dotnet", "run", "--project", proj_dir, "--no-build"], None
+        p = subprocess.run(["/usr/bin/mcs", "-optimize+", src, f"-out:{exe}"], capture_output=True, text=True)
+        if p.returncode != 0: return None, strip_ansi(p.stderr)
+        return ["/usr/bin/mono", "-O=all", exe], None
 
-    # Visual Basic (.NET 9)
-    elif l in ("vb_net", "vb", "visualbasic"):
-        proj_dir = os.path.join(temp_dir, "vbproj")
-        os.makedirs(proj_dir, exist_ok=True)
-        src = os.path.join(proj_dir, "Program.vb")
-        proj = os.path.join(proj_dir, "vbproj.vbproj")
+    # F# (.NET / Mono Linux)
+    elif l in ("fs_net", "fsharp", "fs", "fs_net8", "fs_net9"):
+        dotnet_bin = shutil.which("dotnet")
+        if not dotnet_bin:
+            for c in ("/usr/bin/dotnet", "/usr/share/dotnet/dotnet", "/opt/dotnet/dotnet"):
+                if os.path.exists(c):
+                    dotnet_bin = c
+                    break
+        if dotnet_bin and os.path.exists(dotnet_bin):
+            try:
+                tfm = "net8.0" if "8" in l else "net9.0"
+                proj_dir = os.path.join(temp_dir, "fsproj")
+                os.makedirs(proj_dir, exist_ok=True)
+                src = os.path.join(proj_dir, "Program.fs")
+                proj = os.path.join(proj_dir, "fsproj.fsproj")
+                with open(src, "w", encoding="utf-8") as f: f.write(code)
+                with open(proj, "w", encoding="utf-8") as f:
+                    f.write(f'<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType><TargetFramework>{tfm}</TargetFramework><OptimizationPreference>Speed</OptimizationPreference></PropertyGroup><ItemGroup><Compile Include="Program.fs" /></ItemGroup></Project>')
+                p = subprocess.run([dotnet_bin, "build", "-c", "Release", "--nologo", "-v", "q", proj_dir], capture_output=True, text=True, timeout=8)
+                if p.returncode == 0:
+                    dll = os.path.join(proj_dir, "bin", "Release", tfm, "fsproj.dll")
+                    if os.path.exists(dll):
+                        return [dotnet_bin, "exec", dll], None
+            except Exception:
+                pass
+
+        # Fast Native Linux F# Compiler
+        src = os.path.join(temp_dir, "Program.fs")
+        exe = os.path.join(temp_dir, "Program.exe")
         with open(src, "w", encoding="utf-8") as f: f.write(code)
-        with open(proj, "w", encoding="utf-8") as f:
-            f.write('<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net9.0</TargetFramework><OptimizationPreference>Speed</OptimizationPreference></PropertyGroup><ItemGroup><Compile Include="Program.vb" /></ItemGroup></Project>')
-        p = subprocess.run(["/opt/dotnet/dotnet", "build", "-c", "Release", proj_dir], capture_output=True, text=True)
-        if p.returncode != 0: return None, strip_ansi(p.stdout + p.stderr)
-        return ["/opt/dotnet/dotnet", "run", "--project", proj_dir, "--no-build"], None
+        fsharpc = shutil.which("fsharpc") or "/usr/bin/fsharpc"
+        p = subprocess.run([fsharpc, "--optimize+", src, f"-o:{exe}"], capture_output=True, text=True)
+        if p.returncode != 0: return None, strip_ansi(p.stderr)
+        return ["/usr/bin/mono", "-O=all", exe], None
+
+    # Visual Basic (.NET / Mono Linux)
+    elif l in ("vb_net", "vb", "visualbasic", "vb_net8", "vb_net9"):
+        dotnet_bin = shutil.which("dotnet")
+        if not dotnet_bin:
+            for c in ("/usr/bin/dotnet", "/usr/share/dotnet/dotnet", "/opt/dotnet/dotnet"):
+                if os.path.exists(c):
+                    dotnet_bin = c
+                    break
+        if dotnet_bin and os.path.exists(dotnet_bin):
+            try:
+                tfm = "net8.0" if "8" in l else "net9.0"
+                proj_dir = os.path.join(temp_dir, "vbproj")
+                os.makedirs(proj_dir, exist_ok=True)
+                src = os.path.join(proj_dir, "Program.vb")
+                proj = os.path.join(proj_dir, "vbproj.vbproj")
+                with open(src, "w", encoding="utf-8") as f: f.write(code)
+                with open(proj, "w", encoding="utf-8") as f:
+                    f.write(f'<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType><TargetFramework>{tfm}</TargetFramework><OptimizationPreference>Speed</OptimizationPreference></PropertyGroup><ItemGroup><Compile Include="Program.vb" /></ItemGroup></Project>')
+                p = subprocess.run([dotnet_bin, "build", "-c", "Release", "--nologo", "-v", "q", proj_dir], capture_output=True, text=True, timeout=8)
+                if p.returncode == 0:
+                    dll = os.path.join(proj_dir, "bin", "Release", tfm, "vbproj.dll")
+                    if os.path.exists(dll):
+                        return [dotnet_bin, "exec", dll], None
+            except Exception:
+                pass
+
+        # Fast Native Linux VB Compiler
+        src = os.path.join(temp_dir, "Program.vb")
+        exe = os.path.join(temp_dir, "Program.exe")
+        with open(src, "w", encoding="utf-8") as f: f.write(code)
+        vbnc = shutil.which("vbnc") or "/usr/bin/vbnc"
+        p = subprocess.run([vbnc, "-optimize+", src, f"-out:{exe}"], capture_output=True, text=True)
+        if p.returncode != 0: return None, strip_ansi(p.stderr)
+        return ["/usr/bin/mono", "-O=all", exe], None
 
     # Rust (-O3 Super-Opt)
     elif l in ("rust", "rs"):
@@ -415,7 +480,20 @@ def compile_source(lang: str, code: str, temp_dir: str):
     elif l in ("ts_tsx", "typescript", "ts"):
         src = os.path.join(temp_dir, "prog.ts")
         with open(src, "w", encoding="utf-8") as f: f.write(code)
-        return ["npx", "tsx", src], None
+        tsx_bin = shutil.which("tsx")
+        if not tsx_bin:
+            for candidate in (
+                "/usr/local/bin/tsx",
+                "/usr/bin/tsx",
+                "/home/pc/.nvm/versions/node/v22.23.2/bin/tsx",
+                "/home/pc/.nvm/versions/node/v26.7.0/bin/tsx",
+            ):
+                if os.path.exists(candidate):
+                    tsx_bin = candidate
+                    break
+        if tsx_bin and os.path.exists(tsx_bin):
+            return [tsx_bin, src], None
+        return ["npx", "--silent", "--no-warnings", "tsx", src], None
 
     # JavaScript / Node.js multi-version
     elif l.startswith("js_node") or l in ("js", "javascript", "node"):
@@ -698,6 +776,14 @@ def compile_source(lang: str, code: str, temp_dir: str):
         if p.returncode != 0: return None, strip_ansi(p.stdout + p.stderr)
         return [exe], None
 
+    elif l in ("pas_tp", "tp", "turbopascal"):
+        src = os.path.join(temp_dir, "prog.pas")
+        exe = os.path.join(temp_dir, "prog")
+        with open(src, "w", encoding="utf-8") as f: f.write(code)
+        p = subprocess.run(["/usr/bin/fpc", "-Mtp", "-O3", "-Xs", "-XX", FPC_UNITS, src, f"-o{exe}"], capture_output=True, text=True, cwd=temp_dir)
+        if p.returncode != 0: return None, strip_ansi(p.stdout + p.stderr)
+        return [exe], None
+
     elif l in ("pas_delphi", "delphi"):
         src = os.path.join(temp_dir, "prog.pas")
         exe = os.path.join(temp_dir, "prog")
@@ -745,25 +831,39 @@ def compile_source(lang: str, code: str, temp_dir: str):
         with open(src, "w", encoding="utf-8") as f: f.write(code)
 
         base_dir = "/usr/lib/jvm/java-21-openjdk-amd64"
-        if "temurin" in l:
-            if "8" in l or "1_4" in l or "1_0" in l: base_dir = "/opt/jvm/temurin-8"
-            elif "11" in l: base_dir = "/opt/jvm/temurin-11"
-            elif "17" in l: base_dir = "/opt/jvm/temurin-17"
-            else: base_dir = "/opt/jvm/temurin-21"
-        elif "graalvm" in l:
-            if "17" in l: base_dir = "/opt/jvm/graalvm-17"
-            else: base_dir = "/opt/jvm/graalvm-21"
-        elif "liberica" in l:
-            if "8" in l: base_dir = "/opt/jvm/liberica-8" if os.path.exists("/opt/jvm/liberica-8/bin/javac") else "/usr/lib/jvm/java-8-openjdk-amd64"
-            elif "11" in l: base_dir = "/opt/jvm/liberica-11" if os.path.exists("/opt/jvm/liberica-11/bin/javac") else "/usr/lib/jvm/java-11-openjdk-amd64"
-            elif "17" in l: base_dir = "/opt/jvm/liberica-17" if os.path.exists("/opt/jvm/liberica-17/bin/javac") else "/usr/lib/jvm/java-17-openjdk-amd64"
-            else: base_dir = "/opt/jvm/liberica-21"
-        elif "oracle" in l:
-            base_dir = "/opt/jvm/oracle"
-        elif "26" in l:
-            base_dir = "/usr/lib/jvm/java-26-openjdk-amd64"
+        if "26" in l:
+            if os.path.exists("/opt/jdk-26/bin/javac"): base_dir = "/opt/jdk-26"
+            else: base_dir = "/usr/lib/jvm/java-26-openjdk-amd64"
         elif "25" in l:
-            base_dir = "/usr/lib/jvm/java-25-openjdk-amd64"
+            if os.path.exists("/opt/jdk-25/bin/javac"): base_dir = "/opt/jdk-25"
+            else: base_dir = "/usr/lib/jvm/java-25-openjdk-amd64"
+        elif "graalvm" in l:
+            if "17" in l and os.path.exists("/opt/graalvm-17/bin/javac"): base_dir = "/opt/graalvm-17"
+            elif os.path.exists("/opt/graalvm-21/bin/javac"): base_dir = "/opt/graalvm-21"
+            elif os.path.exists("/opt/graalvm/bin/javac"): base_dir = "/opt/graalvm"
+            else: base_dir = "/opt/jvm/graalvm-21"
+        elif "oracle" in l:
+            if "17" in l and os.path.exists("/opt/oracle-17/bin/javac"): base_dir = "/opt/oracle-17"
+            elif os.path.exists("/opt/oracle-21/bin/javac"): base_dir = "/opt/oracle-21"
+            else: base_dir = "/opt/jvm/oracle"
+        elif "temurin" in l:
+            if "8" in l or "1_4" in l or "1_0" in l:
+                base_dir = "/usr/lib/jvm/temurin-8-jdk-amd64" if os.path.exists("/usr/lib/jvm/temurin-8-jdk-amd64/bin/javac") else "/opt/jvm/temurin-8"
+            elif "11" in l:
+                base_dir = "/usr/lib/jvm/temurin-11-jdk-amd64" if os.path.exists("/usr/lib/jvm/temurin-11-jdk-amd64/bin/javac") else "/opt/jvm/temurin-11"
+            elif "17" in l:
+                base_dir = "/usr/lib/jvm/temurin-17-jdk-amd64" if os.path.exists("/usr/lib/jvm/temurin-17-jdk-amd64/bin/javac") else "/opt/jvm/temurin-17"
+            else:
+                base_dir = "/usr/lib/jvm/temurin-21-jdk-amd64" if os.path.exists("/usr/lib/jvm/temurin-21-jdk-amd64/bin/javac") else "/opt/jvm/temurin-21"
+        elif "liberica" in l:
+            if "8" in l:
+                base_dir = "/usr/lib/jvm/bellsoft-java8-amd64" if os.path.exists("/usr/lib/jvm/bellsoft-java8-amd64/bin/javac") else "/usr/lib/jvm/java-8-openjdk-amd64"
+            elif "11" in l:
+                base_dir = "/usr/lib/jvm/bellsoft-java11-amd64" if os.path.exists("/usr/lib/jvm/bellsoft-java11-amd64/bin/javac") else "/usr/lib/jvm/java-11-openjdk-amd64"
+            elif "17" in l:
+                base_dir = "/usr/lib/jvm/bellsoft-java17-amd64" if os.path.exists("/usr/lib/jvm/bellsoft-java17-amd64/bin/javac") else "/usr/lib/jvm/java-17-openjdk-amd64"
+            else:
+                base_dir = "/usr/lib/jvm/bellsoft-java21-amd64" if os.path.exists("/usr/lib/jvm/bellsoft-java21-amd64/bin/javac") else "/opt/jvm/liberica-21"
         elif "17" in l:
             base_dir = "/usr/lib/jvm/java-17-openjdk-amd64"
         elif "11" in l:
@@ -865,9 +965,8 @@ def run_interactive():
         os.setsid()
         try:
             resource.setrlimit(resource.RLIMIT_CORE, (0, 0)) # No core dumps
-            resource.setrlimit(resource.RLIMIT_NOFILE, (256, 256)) # Cap file descriptors
-            resource.setrlimit(resource.RLIMIT_FSIZE, (10 * 1024 * 1024, 10 * 1024 * 1024)) # 10MB disk write cap
-            resource.setrlimit(resource.RLIMIT_CPU, (6, 6)) # Hard kernel CPU time fallback
+            resource.setrlimit(resource.RLIMIT_NOFILE, (1024, 1024)) # Adequate file descriptors for JIT runtimes
+            resource.setrlimit(resource.RLIMIT_CPU, (10, 10)) # Hard kernel CPU time fallback
         except Exception:
             pass
 
