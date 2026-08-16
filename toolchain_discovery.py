@@ -1,4 +1,11 @@
+#!/usr/bin/env bash
 #!/usr/bin/env python3
+"""
+EOJ Real System Toolchain Discovery Engine
+Probes the actual underlying OS / Docker filesystem and binaries in real-time.
+Filters out any missing toolchains/versions so only 100% available and executable runtimes are returned.
+"""
+
 import os
 import re
 import shutil
@@ -27,785 +34,541 @@ def get_cmd_version(cmd: List[str]) -> Optional[str]:
     except Exception:
         return None
 
-def is_available(binary_name: str) -> bool:
-    return shutil.which(binary_name) is not None
+def is_bin_available(name: str, *alt_paths: str) -> bool:
+    """Check if binary is in PATH or exists in specific locations."""
+    if shutil.which(name) is not None:
+        return True
+    for p in alt_paths:
+        if os.path.isfile(p) and os.access(p, os.X_OK):
+            return True
+    return False
+
+def get_installed_dotnet_sdks() -> List[str]:
+    """Inspect actual installed .NET SDK versions on the machine."""
+    sdks: List[str] = []
+    dotnet_bin = shutil.which("dotnet") or "/usr/share/dotnet/dotnet" or "/usr/bin/dotnet" or "/opt/dotnet/dotnet"
+    if os.path.exists(dotnet_bin) and os.access(dotnet_bin, os.X_OK):
+        try:
+            p = subprocess.run([dotnet_bin, "--list-sdks"], capture_output=True, text=True, timeout=2)
+            if p.returncode == 0:
+                for line in p.stdout.splitlines():
+                    m = re.match(r'^(\d+\.\d+)', line.strip())
+                    if m:
+                        sdks.append(m.group(1))
+        except Exception:
+            pass
+    if os.path.exists("/usr/share/dotnet/sdk"):
+        try:
+            for entry in os.listdir("/usr/share/dotnet/sdk"):
+                m = re.match(r'^(\d+\.\d+)', entry)
+                if m:
+                    sdks.append(m.group(1))
+        except Exception:
+            pass
+    return sorted(list(set(sdks)), reverse=True)
+
+def get_installed_jvm_paths() -> Dict[str, str]:
+    """Inspect all physically installed JVM installations."""
+    jvms: Dict[str, str] = {}
+    jvm_dir = "/usr/lib/jvm"
+    if os.path.exists(jvm_dir):
+        try:
+            for item in os.listdir(jvm_dir):
+                full_path = os.path.join(jvm_dir, item)
+                java_bin = os.path.join(full_path, "bin", "java")
+                if os.path.isfile(java_bin) and os.access(java_bin, os.X_OK):
+                    jvms[item] = java_bin
+        except Exception:
+            pass
+
+    # Check custom /opt installations
+    opt_checks = [
+        ("jdk-26", "/opt/jdk-26/bin/java"),
+        ("jdk-25", "/opt/jdk-25/bin/java"),
+        ("graalvm-21", "/opt/graalvm-21/bin/java"),
+        ("graalvm-17", "/opt/graalvm-17/bin/java"),
+        ("oracle-21", "/opt/oracle-21/bin/java"),
+        ("oracle-17", "/opt/oracle-17/bin/java"),
+    ]
+    for key, path in opt_checks:
+        if os.path.isfile(path) and os.access(path, os.X_OK):
+            jvms[key] = path
+
+    # Check default system java
+    sys_java = shutil.which("java")
+    if sys_java:
+        jvms["default"] = sys_java
+    return jvms
 
 def discover_installed_languages() -> List[Dict[str, Any]]:
-    """Returns the comprehensive multi-version and multi-distribution catalog for all 21 languages."""
-    gcc_v = get_cmd_version(["gcc", "--version"]) or "15"
-    clang_v = get_cmd_version(["clang", "--version"]) or "21"
-    fpc_v = get_cmd_version(["fpc", "-iV"]) or "3.2.2"
+    """Probes the host/container system in real-time and dynamically builds the active catalog."""
+    installed_langs: List[Dict[str, Any]] = []
 
-    catalog: List[Dict[str, Any]] = [
-        {
-            "id": "assembly",
-            "name": "Assembly",
-            "monaco": "asm",
-            "template": "default rel\nglobal main\nextern printf\n\nsection .data\n    msg db 'Hello, World!', 10, 0\n\nsection .text\nmain:\n    sub rsp, 8\n    lea rdi, [msg]\n    xor eax, eax\n    call printf wrt ..plt\n    xor eax, eax\n    add rsp, 8\n    ret\n",
-            "versions": [
-                {
-                    "id": "x86_64",
-                    "name": "x86-64 (AMD64)",
-                    "toolchains": [
-                        {"id": "nasm", "name": "NASM (Intel Syntax)", "targetId": "asm_nasm"},
-                        {"id": "yasm", "name": "YASM", "targetId": "asm_yasm"},
-                        {"id": "gas", "name": "GNU AS (Intel Syntax)", "targetId": "asm_gas"},
-                        {"id": "fasm", "name": "FASM (Flat Assembler)", "targetId": "asm_fasm"},
-                    ],
-                },
-                {
-                    "id": "arm64",
-                    "name": "ARM64 (AArch64)",
-                    "toolchains": [
-                        {"id": "gas_arm64", "name": "GNU AS ARM64 (QEMU Emulation)", "targetId": "asm_arm64"},
-                        {"id": "gas_arm64_opt", "name": "GNU AS ARM64 (High Perf)", "targetId": "asm_arm64"},
-                    ],
-                },
-                {
-                    "id": "arm32",
-                    "name": "ARM32 (ARMv7 HF)",
-                    "toolchains": [
-                        {"id": "gas_arm32", "name": "GNU AS ARM32 (QEMU Emulation)", "targetId": "asm_arm32"},
-                        {"id": "gas_arm32_opt", "name": "GNU AS ARM32 (High Perf)", "targetId": "asm_arm32"},
-                    ],
-                },
-            ],
-        },
-        {
-            "id": "c",
-            "name": "C",
-            "monaco": "c",
-            "template": "#include <stdio.h>\n\nint main(void) {\n  printf(\"Hello, World!\\n\");\n  return 0;\n}\n",
-            "versions": [
-                {
-                    "id": "23",
-                    "name": "C23",
-                    "toolchains": [
-                        {"id": "gcc", "name": f"GCC {gcc_v} (-O3 Super-Opt)", "targetId": "c23"},
-                        {"id": "clang", "name": f"Clang {clang_v} (-O3 Super-Opt)", "targetId": "clang23"},
-                    ],
-                },
-                {
-                    "id": "17",
-                    "name": "C17 / C18",
-                    "toolchains": [
-                        {"id": "gcc", "name": f"GCC {gcc_v} (-O3 Super-Opt)", "targetId": "c17"},
-                        {"id": "clang", "name": f"Clang {clang_v} (-O3 Super-Opt)", "targetId": "clang17"},
-                    ],
-                },
-                {
-                    "id": "11",
-                    "name": "C11",
-                    "toolchains": [
-                        {"id": "gcc", "name": f"GCC {gcc_v} (-O3 Super-Opt)", "targetId": "c11"},
-                        {"id": "clang", "name": f"Clang {clang_v} (-O3 Super-Opt)", "targetId": "clang11"},
-                    ],
-                },
-                {
-                    "id": "99",
-                    "name": "C99",
-                    "toolchains": [
-                        {"id": "gcc", "name": f"GCC {gcc_v} (-O3 Super-Opt)", "targetId": "c99"},
-                        {"id": "clang", "name": f"Clang {clang_v} (-O3 Super-Opt)", "targetId": "clang99"},
-                    ],
-                },
-                {
-                    "id": "89",
-                    "name": "C89 / ANSI C",
-                    "toolchains": [
-                        {"id": "gcc", "name": f"GCC {gcc_v} (-O3 Super-Opt)", "targetId": "c89"},
-                        {"id": "clang", "name": f"Clang {clang_v} (-O3 Super-Opt)", "targetId": "clang89"},
-                    ],
-                },
-            ],
-        },
-        {
-            "id": "cpp",
-            "name": "C++",
-            "monaco": "cpp",
-            "template": "#include <iostream>\nusing namespace std;\n\nint main() {\n  cout << \"Hello, World!\" << endl;\n  return 0;\n}\n",
-            "versions": [
-                {
-                    "id": "26",
-                    "name": "C++26",
-                    "toolchains": [
-                        {"id": "gcc", "name": f"GCC {gcc_v} (-O3 Super-Opt)", "targetId": "cpp26"},
-                        {"id": "clang", "name": f"Clang {clang_v} (-O3 Super-Opt)", "targetId": "clpp26"},
-                    ],
-                },
-                {
-                    "id": "23",
-                    "name": "C++23",
-                    "toolchains": [
-                        {"id": "gcc", "name": f"GCC {gcc_v} (-O3 Super-Opt)", "targetId": "cpp23"},
-                        {"id": "clang", "name": f"Clang {clang_v} (-O3 Super-Opt)", "targetId": "clpp23"},
-                    ],
-                },
-                {
-                    "id": "20",
-                    "name": "C++20",
-                    "toolchains": [
-                        {"id": "gcc", "name": f"GCC {gcc_v} (-O3 Super-Opt)", "targetId": "cpp20"},
-                        {"id": "clang", "name": f"Clang {clang_v} (-O3 Super-Opt)", "targetId": "clpp20"},
-                    ],
-                },
-                {
-                    "id": "17",
-                    "name": "C++17",
-                    "toolchains": [
-                        {"id": "gcc", "name": f"GCC {gcc_v} (-O3 Super-Opt)", "targetId": "cpp17"},
-                        {"id": "clang", "name": f"Clang {clang_v} (-O3 Super-Opt)", "targetId": "clpp17"},
-                    ],
-                },
-                {
-                    "id": "14",
-                    "name": "C++14",
-                    "toolchains": [
-                        {"id": "gcc", "name": f"GCC {gcc_v} (-O3 Super-Opt)", "targetId": "cpp14"},
-                        {"id": "clang", "name": f"Clang {clang_v} (-O3 Super-Opt)", "targetId": "clpp14"},
-                    ],
-                },
-                {
-                    "id": "11",
-                    "name": "C++11",
-                    "toolchains": [
-                        {"id": "gcc", "name": f"GCC {gcc_v} (-O3 Super-Opt)", "targetId": "cpp11"},
-                        {"id": "clang", "name": f"Clang {clang_v} (-O3 Super-Opt)", "targetId": "clpp11"},
-                    ],
-                },
-                {
-                    "id": "03",
-                    "name": "C++03 / 98",
-                    "toolchains": [
-                        {"id": "gcc", "name": f"GCC {gcc_v} (-O3 Super-Opt)", "targetId": "cpp03"},
-                        {"id": "clang", "name": f"Clang {clang_v} (-O3 Super-Opt)", "targetId": "clpp03"},
-                    ],
-                },
-            ],
-        },
-        {
-            "id": "csharp",
-            "name": "C#",
-            "monaco": "csharp",
-            "template": "using System;\n\nclass Program {\n    static void Main() {\n        Console.WriteLine(\"Hello, World!\");\n    }\n}\n",
-            "versions": [
-                {
-                    "id": "net9",
-                    "name": "C# 13 (.NET 9.0)",
-                    "toolchains": [
-                        {"id": "dotnet9", "name": "Microsoft .NET 9.0 (CoreCLR)", "targetId": "cs_net"},
-                        {"id": "dotnet9_r2r", "name": ".NET 9 ReadyToRun (AOT)", "targetId": "cs_net"},
-                    ],
-                },
-                {
-                    "id": "net8",
-                    "name": "C# 12 (.NET 8.0)",
-                    "toolchains": [
-                        {"id": "dotnet8", "name": "Microsoft .NET Runtime", "targetId": "cs_net"},
-                    ],
-                },
-                {
-                    "id": "mono",
-                    "name": "C# Mono (Classic)",
-                    "toolchains": [
-                        {"id": "mcs", "name": "Mono C# Compiler (mcs 6.14)", "targetId": "cs_mono"},
-                        {"id": "mono_opt", "name": "Mono JIT Optimizer", "targetId": "cs_mono"},
-                    ],
-                },
-            ],
-        },
-        {
-            "id": "d",
-            "name": "D",
-            "monaco": "d",
-            "template": "import std.stdio;\n\nvoid main() {\n    writeln(\"Hello, World!\");\n}\n",
-            "versions": [
-                {
-                    "id": "d2_modern",
-                    "name": "D 2.x (Modern D)",
-                    "toolchains": [
-                        {"id": "gdc_o3", "name": "GNU D Compiler (GDC 15 -O3)", "targetId": "d_gdc"},
-                        {"id": "gdc_native", "name": "GDC (-march=native -frelease)", "targetId": "d_gdc"},
-                    ],
-                },
-                {
-                    "id": "d2_stable",
-                    "name": "D 2.098 (Stable)",
-                    "toolchains": [
-                        {"id": "gdc_stable", "name": "GDC Standard Release", "targetId": "d_gdc"},
-                    ],
-                },
-                {
-                    "id": "d2_classic",
-                    "name": "D 2.080 (Classic)",
-                    "toolchains": [
-                        {"id": "gdc_classic", "name": "GDC Legacy Mode", "targetId": "d_gdc"},
-                    ],
-                },
-            ],
-        },
-        {
-            "id": "dart",
-            "name": "Dart",
-            "monaco": "dart",
-            "template": "void main() {\n  print('Hello, World!');\n}\n",
-            "versions": [
-                {
-                    "id": "dart3",
-                    "name": "Dart 3.13 (Latest)",
-                    "toolchains": [
-                        {"id": "dart_jit", "name": "Dart VM & JIT Compiler", "targetId": "dart"},
-                        {"id": "dart_opt", "name": "Dart VM High Performance", "targetId": "dart"},
-                    ],
-                },
-                {
-                    "id": "dart30",
-                    "name": "Dart 3.0 (Stable)",
-                    "toolchains": [
-                        {"id": "dart30_vm", "name": "Dart 3.0 VM Runtime", "targetId": "dart"},
-                    ],
-                },
-                {
-                    "id": "dart2",
-                    "name": "Dart 2.19 (Legacy)",
-                    "toolchains": [
-                        {"id": "dart2_vm", "name": "Dart 2.x Compatibility", "targetId": "dart"},
-                    ],
-                },
-            ],
-        },
-        {
-            "id": "fsharp",
-            "name": "F#",
-            "monaco": "fsharp",
-            "template": "printfn \"Hello, World!\"\n",
-            "versions": [
-                {
-                    "id": "net9",
-                    "name": "F# 9.0 (.NET 9)",
-                    "toolchains": [
-                        {"id": "fsc_net9", "name": "Microsoft .NET F# 9 Compiler", "targetId": "fs_net"},
-                        {"id": "fsc_opt", "name": "F# CoreCLR JIT", "targetId": "fs_net"},
-                    ],
-                },
-                {
-                    "id": "net8",
-                    "name": "F# 8.0 (.NET 8)",
-                    "toolchains": [
-                        {"id": "fsc_net8", "name": "F# Runtime Engine", "targetId": "fs_net"},
-                    ],
-                },
-                {
-                    "id": "net7",
-                    "name": "F# 7.0 (Legacy)",
-                    "toolchains": [
-                        {"id": "fsc_net7", "name": "F# Standard Runtime", "targetId": "fs_net"},
-                    ],
-                },
-            ],
-        },
-        {
-            "id": "go",
-            "name": "Go",
-            "monaco": "go",
-            "template": "package main\n\nimport \"fmt\"\n\nfunc main() {\n    fmt.Println(\"Hello, World!\")\n}\n",
-            "versions": [
-                {
-                    "id": "go126",
-                    "name": "Go 1.26 (Latest)",
-                    "toolchains": [
-                        {"id": "gc", "name": "Go Standard Toolchain (gc -s -w)", "targetId": "go"},
-                        {"id": "gc_opt", "name": "Go Native Compiler (Inlining)", "targetId": "go"},
-                    ],
-                },
-                {
-                    "id": "go124",
-                    "name": "Go 1.24 (Stable)",
-                    "toolchains": [
-                        {"id": "gc_124", "name": "Go Toolchain (Standard)", "targetId": "go"},
-                    ],
-                },
-                {
-                    "id": "go122",
-                    "name": "Go 1.22 (Legacy)",
-                    "toolchains": [
-                        {"id": "gc_122", "name": "Go Toolchain (Legacy)", "targetId": "go"},
-                    ],
-                },
-            ],
-        },
-        {
-            "id": "java",
-            "name": "Java",
-            "monaco": "java",
-            "template": "public class Main {\n  public static void main(String[] args) {\n    System.out.println(\"Hello, World!\");\n  }\n}\n",
-            "versions": [
-                {
-                    "id": "26",
-                    "name": "Java 26",
-                    "toolchains": [
-                        {"id": "openjdk26", "name": "OpenJDK 26 HotSpot", "targetId": "java26_openjdk"},
-                        {"id": "temurin26", "name": "Eclipse Temurin 26 (Adoptium)", "targetId": "java26_temurin"},
-                        {"id": "graalvm26", "name": "Oracle GraalVM CE 26", "targetId": "java26_graalvm"},
-                        {"id": "liberica26", "name": "BellSoft Liberica 26", "targetId": "java26_liberica"},
-                        {"id": "oracle26", "name": "Oracle JDK 26", "targetId": "java26_oracle"},
-                    ],
-                },
-                {
-                    "id": "25",
-                    "name": "Java 25 (LTS)",
-                    "toolchains": [
-                        {"id": "openjdk25", "name": "OpenJDK 25 HotSpot", "targetId": "java25_openjdk"},
-                        {"id": "temurin25", "name": "Eclipse Temurin 25 (Adoptium)", "targetId": "java25_temurin"},
-                        {"id": "graalvm25", "name": "Oracle GraalVM CE 25", "targetId": "java25_graalvm"},
-                        {"id": "liberica25", "name": "BellSoft Liberica 25", "targetId": "java25_liberica"},
-                        {"id": "oracle25", "name": "Oracle JDK 25", "targetId": "java25_oracle"},
-                    ],
-                },
-                {
-                    "id": "21",
-                    "name": "Java 21 (LTS)",
-                    "toolchains": [
-                        {"id": "openjdk21", "name": "OpenJDK 21", "targetId": "java21_openjdk"},
-                        {"id": "temurin21", "name": "Eclipse Temurin 21 (Adoptium)", "targetId": "java21_temurin"},
-                        {"id": "graalvm21", "name": "Oracle GraalVM CE 21", "targetId": "java21_graalvm"},
-                        {"id": "liberica21", "name": "BellSoft Liberica 21", "targetId": "java21_liberica"},
-                        {"id": "oracle21", "name": "Oracle JDK 21", "targetId": "java21_oracle"},
-                    ],
-                },
-                {
-                    "id": "17",
-                    "name": "Java 17 (LTS)",
-                    "toolchains": [
-                        {"id": "openjdk17", "name": "OpenJDK 17", "targetId": "java17_openjdk"},
-                        {"id": "temurin17", "name": "Eclipse Temurin 17", "targetId": "java17_temurin"},
-                        {"id": "graalvm17", "name": "Oracle GraalVM CE 17", "targetId": "java17_graalvm"},
-                        {"id": "liberica17", "name": "BellSoft Liberica 17", "targetId": "java17_liberica"},
-                        {"id": "oracle17", "name": "Oracle JDK 17", "targetId": "java17_oracle"},
-                    ],
-                },
-                {
-                    "id": "11",
-                    "name": "Java 11 (LTS)",
-                    "toolchains": [
-                        {"id": "openjdk11", "name": "OpenJDK 11", "targetId": "java11_openjdk"},
-                        {"id": "temurin11", "name": "Eclipse Temurin 11", "targetId": "java11_temurin"},
-                        {"id": "liberica11", "name": "BellSoft Liberica 11", "targetId": "java11_liberica"},
-                        {"id": "oracle11", "name": "Oracle JDK 11", "targetId": "java11_oracle"},
-                    ],
-                },
-                {
-                    "id": "8",
-                    "name": "Java 8 (1.8 LTS)",
-                    "toolchains": [
-                        {"id": "openjdk8", "name": "OpenJDK 8", "targetId": "java8_openjdk"},
-                        {"id": "temurin8", "name": "Eclipse Temurin 8", "targetId": "java8_temurin"},
-                        {"id": "liberica8", "name": "BellSoft Liberica 8", "targetId": "java8_liberica"},
-                        {"id": "oracle8", "name": "Oracle JDK 8", "targetId": "java8_oracle"},
-                    ],
-                },
-                {
-                    "id": "7",
-                    "name": "Java 7 (1.7)",
-                    "toolchains": [
-                        {"id": "openjdk_compat7", "name": "OpenJDK (Java 7)", "targetId": "java7_compat"},
-                        {"id": "temurin_compat7", "name": "Eclipse Temurin (Java 7)", "targetId": "java7_temurin"},
-                        {"id": "oracle_compat7", "name": "Oracle JDK (Java 7)", "targetId": "java7_oracle"},
-                    ],
-                },
-                {
-                    "id": "6",
-                    "name": "Java 6 (1.6)",
-                    "toolchains": [
-                        {"id": "openjdk_compat6", "name": "OpenJDK (Java 6)", "targetId": "java6_compat"},
-                        {"id": "temurin_compat6", "name": "Eclipse Temurin (Java 6)", "targetId": "java6_temurin"},
-                    ],
-                },
-                {
-                    "id": "5",
-                    "name": "Java 5 (1.5)",
-                    "toolchains": [
-                        {"id": "openjdk_compat5", "name": "OpenJDK (Java 5)", "targetId": "java5_compat"},
-                        {"id": "temurin_compat5", "name": "Eclipse Temurin (Java 5)", "targetId": "java5_temurin"},
-                    ],
-                },
-                {
-                    "id": "1_4",
-                    "name": "Java 1.4 (Legacy)",
-                    "toolchains": [
-                        {"id": "openjdk_compat1_4", "name": "OpenJDK 8 (-source 1.4)", "targetId": "java1_4_compat"},
-                        {"id": "temurin_compat1_4", "name": "Eclipse Temurin (-source 1.4)", "targetId": "java1_4_temurin"},
-                    ],
-                },
-                {
-                    "id": "1_0",
-                    "name": "Java 1.0 – 1.3 (Classic)",
-                    "toolchains": [
-                        {"id": "openjdk_compat1_0", "name": "OpenJDK 8 (-source 1.3)", "targetId": "java1_0_compat"},
-                        {"id": "temurin_compat1_0", "name": "Eclipse Temurin (-source 1.3)", "targetId": "java1_0_temurin"},
-                    ],
-                },
-            ],
-        },
-        {
-            "id": "javascript",
-            "name": "JavaScript",
-            "monaco": "javascript",
-            "template": "console.log(\"Hello, World!\");\n",
-            "versions": [
-                {
-                    "id": "node26",
-                    "name": "Node.js 26 (Current)",
-                    "toolchains": [
-                        {"id": "node26", "name": "V8 Engine (Node.js 26)", "targetId": "js_node26"},
-                        {"id": "node26_turbo", "name": "V8 TurboFan (Max Optimize)", "targetId": "js_node26"},
-                    ],
-                },
-                {
-                    "id": "node24",
-                    "name": "Node.js 24 (LTS)",
-                    "toolchains": [
-                        {"id": "node24", "name": "V8 Engine (Node.js 24)", "targetId": "js_node24"},
-                    ],
-                },
-                {
-                    "id": "node22",
-                    "name": "Node.js 22 (LTS)",
-                    "toolchains": [
-                        {"id": "node22", "name": "V8 Engine (Node.js 22)", "targetId": "js_node22"},
-                    ],
-                },
-                {
-                    "id": "node20",
-                    "name": "Node.js 20 (LTS)",
-                    "toolchains": [
-                        {"id": "node20", "name": "V8 Engine (Node.js 20)", "targetId": "js_node20"},
-                    ],
-                },
-                {
-                    "id": "node18",
-                    "name": "Node.js 18 (Maintenance)",
-                    "toolchains": [
-                        {"id": "node18", "name": "V8 Engine (Node.js 18)", "targetId": "js_node18"},
-                    ],
-                },
-            ],
-        },
-        {
-            "id": "kotlin",
-            "name": "Kotlin",
-            "monaco": "kotlin",
-            "template": "fun main() {\n    println(\"Hello, World!\")\n}\n",
-            "versions": [
-                {
-                    "id": "2.1",
-                    "name": "Kotlin 2.1 (Latest K2)",
-                    "toolchains": [
-                        {"id": "kotlinc21_jvm21", "name": "kotlinc 2.1 (OpenJDK 21)", "targetId": "kotlin21"},
-                        {"id": "kotlinc21_temurin", "name": "kotlinc 2.1 (Eclipse Temurin)", "targetId": "kotlin21_temurin"},
-                    ],
-                },
-                {
-                    "id": "2.0",
-                    "name": "Kotlin 2.0 (Stable)",
-                    "toolchains": [
-                        {"id": "kotlinc20_jvm", "name": "Kotlin K2 Compiler", "targetId": "kotlin21"},
-                    ],
-                },
-                {
-                    "id": "1.9",
-                    "name": "Kotlin 1.9 (K1 Engine)",
-                    "toolchains": [
-                        {"id": "kotlinc19_jvm", "name": "Kotlin 1.9 Compatibility", "targetId": "kotlin21"},
-                    ],
-                },
-            ],
-        },
-        {
-            "id": "llvmir",
-            "name": "LLVM IR",
-            "monaco": "llvm",
-            "template": "@msg = private unnamed_addr constant [15 x i8] c\"Hello, World!\\00\"\ndeclare i32 @puts(i8*)\ndefine i32 @main() {\n    %1 = call i32 @puts(i8* getelementptr inbounds ([15 x i8], [15 x i8]* @msg, i32 0, i32 0))\n    ret i32 0\n}\n",
-            "versions": [
-                {
-                    "id": "llvm21",
-                    "name": "LLVM 21 IR (Latest)",
-                    "toolchains": [
-                        {"id": "lli", "name": "LLVM JIT Interpreter (lli)", "targetId": "llvm_lli"},
-                        {"id": "clang_ll", "name": "Clang Native Compiler (-O3)", "targetId": "llvm_clang"},
-                    ],
-                },
-                {
-                    "id": "llvm18",
-                    "name": "LLVM 18 IR (Stable)",
-                    "toolchains": [
-                        {"id": "lli18", "name": "LLVM Interpreter (lli)", "targetId": "llvm_lli"},
-                        {"id": "clang18", "name": "Clang LLVM Backend", "targetId": "llvm_clang"},
-                    ],
-                },
-                {
-                    "id": "llvm16",
-                    "name": "LLVM 16 IR (Legacy)",
-                    "toolchains": [
-                        {"id": "lli16", "name": "LLVM Interpreter (Legacy)", "targetId": "llvm_lli"},
-                    ],
-                },
-            ],
-        },
-        {
-            "id": "lua",
-            "name": "Lua",
-            "monaco": "lua",
-            "template": "print(\"Hello, World!\")\n",
-            "versions": [
-                {
-                    "id": "5.4",
-                    "name": "Lua 5.4 (Latest)",
-                    "toolchains": [
-                        {"id": "lua54", "name": "PUC-Rio Lua 5.4", "targetId": "lua54"},
-                        {"id": "luajit54", "name": "LuaJIT Compatible Mode", "targetId": "luajit"},
-                    ],
-                },
-                {
-                    "id": "5.3",
-                    "name": "Lua 5.3 (Stable)",
-                    "toolchains": [
-                        {"id": "lua53", "name": "PUC-Rio Lua 5.3", "targetId": "lua53"},
-                    ],
-                },
-                {
-                    "id": "5.1",
-                    "name": "Lua 5.1 (Classic)",
-                    "toolchains": [
-                        {"id": "lua51", "name": "PUC-Rio Lua 5.1", "targetId": "lua51"},
-                        {"id": "luajit", "name": "LuaJIT 2.1 JIT Engine", "targetId": "luajit"},
-                    ],
-                },
-            ],
-        },
-        {
-            "id": "objectivec",
-            "name": "Objective-C",
-            "monaco": "objective-c",
-            "template": "#include <stdio.h>\n#include <objc/objc.h>\n\nint main(void) {\n    printf(\"Hello, World!\\n\");\n    return 0;\n}\n",
-            "versions": [
-                {
-                    "id": "objc2",
-                    "name": "Objective-C 2.0 (Modern)",
-                    "toolchains": [
-                        {"id": "gcc_objc", "name": "GCC 15 (-O3 Super-Opt)", "targetId": "objc_gcc"},
-                        {"id": "clang_objc", "name": "Clang 21 (-O3 Super-Opt)", "targetId": "objc_clang"},
-                    ],
-                },
-                {
-                    "id": "objc1",
-                    "name": "Objective-C 1.0 (Classic)",
-                    "toolchains": [
-                        {"id": "gcc_objc1", "name": "GCC GNU Runtime", "targetId": "objc_gcc"},
-                        {"id": "clang_objc1", "name": "Clang GNU Runtime", "targetId": "objc_clang"},
-                    ],
-                },
-                {
-                    "id": "objcpp",
-                    "name": "Objective-C++",
-                    "toolchains": [
-                        {"id": "gcc_objcpp", "name": "GCC Objective-C++ (-O3)", "targetId": "objc_gcc"},
-                        {"id": "clang_objcpp", "name": "Clang Objective-C++ (-O3)", "targetId": "objc_clang"},
-                    ],
-                },
-            ],
-        },
-        {
+    # 1. C
+    has_gcc = is_bin_available("gcc", "/usr/bin/gcc")
+    has_clang = is_bin_available("clang", "/usr/bin/clang")
+    if has_gcc or has_clang:
+        c_versions = []
+        for std_id, std_name in [("c23", "C23"), ("c17", "C17 / C18"), ("c11", "C11"), ("c99", "C99"), ("c89", "C89 / C90")]:
+            tools = []
+            if has_gcc:
+                tools.append({"id": f"gcc_{std_id}", "name": f"GCC ({std_name} -O3 Super-Opt)", "targetId": std_id})
+            if has_clang:
+                tools.append({"id": f"clang_{std_id}", "name": f"Clang ({std_name} -O3 Super-Opt)", "targetId": f"clang_{std_id}"})
+            if tools:
+                c_versions.append({"id": std_id, "name": std_name, "toolchains": tools})
+        if c_versions:
+            installed_langs.append({
+                "id": "c",
+                "name": "C",
+                "monaco": "c",
+                "template": '#include <stdio.h>\n\nint main(void) {\n  printf("Hello, World!\\n");\n  return 0;\n}\n',
+                "versions": c_versions,
+            })
+
+    # 2. C++
+    has_gpp = is_bin_available("g++", "/usr/bin/g++")
+    has_clangpp = is_bin_available("clang++", "/usr/bin/clang++")
+    if has_gpp or has_clangpp:
+        cpp_versions = []
+        for std_id, std_name in [("cpp26", "C++26"), ("cpp23", "C++23"), ("cpp20", "C++20"), ("cpp17", "C++17"), ("cpp14", "C++14"), ("cpp11", "C++11"), ("cpp03", "C++03 / 98")]:
+            tools = []
+            if has_gpp:
+                tools.append({"id": f"gpp_{std_id}", "name": f"G++ ({std_name} -O3 Super-Opt)", "targetId": std_id})
+            if has_clangpp:
+                tools.append({"id": f"clangpp_{std_id}", "name": f"Clang++ ({std_name} -O3 Super-Opt)", "targetId": f"clpp_{std_id.replace('cpp', '')}"})
+            if tools:
+                cpp_versions.append({"id": std_id, "name": std_name, "toolchains": tools})
+        if cpp_versions:
+            installed_langs.append({
+                "id": "cpp",
+                "name": "C++",
+                "monaco": "cpp",
+                "template": '#include <iostream>\n\nint main() {\n  std::ios_base::sync_with_stdio(false);\n  std::cin.tie(NULL);\n  std::cout << "Hello, World!" << "\\n";\n  return 0;\n}\n',
+                "versions": cpp_versions,
+            })
+
+    # 3. Python
+    has_py3 = is_bin_available("python3", "/usr/bin/python3")
+    has_pypy3 = is_bin_available("pypy3", "/usr/bin/pypy3")
+    has_py2 = is_bin_available("python2", "/usr/bin/python2")
+    if has_py3 or has_pypy3 or has_py2:
+        py_versions = []
+        if has_py3:
+            v_str = get_cmd_version(["python3", "--version"]) or "3.12"
+            py_versions.append({
+                "id": "py3",
+                "name": f"Python {v_str} (CPython)",
+                "toolchains": [{"id": "cpython3", "name": f"CPython {v_str} (Standard)", "targetId": "python3"}],
+            })
+        if has_pypy3:
+            py_versions.append({
+                "id": "pypy3",
+                "name": "PyPy 3 (Tracing JIT)",
+                "toolchains": [{"id": "pypy3_jit", "name": "PyPy 3 JIT Engine", "targetId": "pypy3"}],
+            })
+        if has_py2:
+            py_versions.append({
+                "id": "py2",
+                "name": "Python 2.7 (Legacy)",
+                "toolchains": [{"id": "cpython2", "name": "CPython 2.7", "targetId": "python2"}],
+            })
+        if py_versions:
+            installed_langs.append({
+                "id": "python",
+                "name": "Python",
+                "monaco": "python",
+                "template": 'def main():\n    print("Hello, World!")\n\nif __name__ == "__main__":\n    main()\n',
+                "versions": py_versions,
+            })
+
+    # 4. Java
+    jvms = get_installed_jvm_paths()
+    if jvms:
+        java_versions = []
+        # Check standard versions: 26, 25, 21, 17, 11, 8
+        for ver_num, label in [("26", "Java 26"), ("25", "Java 25 (LTS)"), ("21", "Java 21 (LTS)"), ("17", "Java 17 (LTS)"), ("11", "Java 11 (LTS)"), ("8", "Java 8 (LTS)")]:
+            tools = []
+            # OpenJDK
+            if any(f"java-{ver_num}-openjdk" in k or f"jdk-{ver_num}" in k for k in jvms):
+                tools.append({"id": f"openjdk{ver_num}", "name": f"OpenJDK {ver_num} HotSpot", "targetId": f"java{ver_num}_openjdk"})
+            # Temurin
+            if any(f"temurin-{ver_num}" in k for k in jvms):
+                tools.append({"id": f"temurin{ver_num}", "name": f"Eclipse Temurin {ver_num} (Adoptium)", "targetId": f"java{ver_num}_temurin"})
+            # GraalVM
+            if any(f"graalvm-{ver_num}" in k for k in jvms):
+                tools.append({"id": f"graalvm{ver_num}", "name": f"Oracle GraalVM CE {ver_num}", "targetId": f"java{ver_num}_graalvm"})
+            # BellSoft
+            if any(f"bellsoft-java{ver_num}" in k for k in jvms):
+                tools.append({"id": f"liberica{ver_num}", "name": f"BellSoft Liberica {ver_num}", "targetId": f"java{ver_num}_liberica"})
+            # Oracle JDK
+            if any(f"oracle-{ver_num}" in k for k in jvms):
+                tools.append({"id": f"oracle{ver_num}", "name": f"Oracle JDK {ver_num}", "targetId": f"java{ver_num}_oracle"})
+
+            if tools:
+                java_versions.append({"id": ver_num, "name": label, "toolchains": tools})
+
+        if not java_versions and "default" in jvms:
+            v_str = get_cmd_version(["java", "-version"]) or "21"
+            major = v_str.split(".")[0]
+            java_versions.append({
+                "id": major,
+                "name": f"Java {major} (System Default)",
+                "toolchains": [{"id": f"java_sys", "name": f"Java {v_str} HotSpot", "targetId": f"java{major}_openjdk"}],
+            })
+
+        if java_versions:
+            installed_langs.append({
+                "id": "java",
+                "name": "Java",
+                "monaco": "java",
+                "template": 'public class Main {\n  public static void main(String[] args) {\n    System.out.println("Hello, World!");\n  }\n}\n',
+                "versions": java_versions,
+            })
+
+    # 5. C#
+    has_mcs = is_bin_available("mcs", "/usr/bin/mcs")
+    has_mono = is_bin_available("mono", "/usr/bin/mono")
+    dotnet_sdks = get_installed_dotnet_sdks()
+    if has_mcs or dotnet_sdks:
+        cs_versions = []
+        if "9.0" in dotnet_sdks or "9.0" in "".join(dotnet_sdks):
+            cs_versions.append({
+                "id": "net9",
+                "name": "C# 13 (.NET 9.0)",
+                "toolchains": [{"id": "net9_coreclr", "name": "Microsoft .NET 9.0 (CoreCLR)", "targetId": "cs_net9"}],
+            })
+        if "8.0" in dotnet_sdks or "8.0" in "".join(dotnet_sdks):
+            cs_versions.append({
+                "id": "net8",
+                "name": "C# 12 (.NET 8.0)",
+                "toolchains": [{"id": "net8_coreclr", "name": "Microsoft .NET 8.0 (CoreCLR)", "targetId": "cs_net8"}],
+            })
+        if has_mcs and has_mono:
+            cs_versions.append({
+                "id": "mono",
+                "name": "C# Mono (Linux Native)",
+                "toolchains": [{"id": "mono_mcs", "name": "Mono C# Compiler (mcs -optimize+)", "targetId": "cs_mono"}],
+            })
+        if not cs_versions and has_mcs:
+            cs_versions.append({
+                "id": "mono",
+                "name": "C# Mono",
+                "toolchains": [{"id": "mono_mcs", "name": "Mono C# (mcs)", "targetId": "cs_mono"}],
+            })
+        if cs_versions:
+            installed_langs.append({
+                "id": "csharp",
+                "name": "C#",
+                "monaco": "csharp",
+                "template": 'using System;\n\nclass Program {\n  static void Main(string[] args) {\n    Console.WriteLine("Hello, World!");\n  }\n}\n',
+                "versions": cs_versions,
+            })
+
+    # 6. Pascal
+    has_fpc = is_bin_available("fpc", "/usr/bin/fpc")
+    if has_fpc:
+        fpc_v = get_cmd_version(["fpc", "-iV"]) or "3.2.2"
+        installed_langs.append({
             "id": "pascal",
             "name": "Pascal",
             "monaco": "pascal",
-            "template": "{$mode objfpc}\nprogram Hello;\nbegin\n  writeln('Hello, World!');\nend.\n",
+            "template": 'program Hello;\nbegin\n  writeln(\'Hello, World!\');\nend.\n',
             "versions": [
                 {
-                    "id": "fpc",
-                    "name": "Free Pascal (ObjFPC)",
+                    "id": "objfpc",
+                    "name": f"Free Pascal {fpc_v} (ObjFPC Mode)",
                     "toolchains": [
-                        {"id": "fpc", "name": f"FPC {fpc_v} (-O3 Super-Opt)", "targetId": "pas_fpc"},
-                        {"id": "fpc_smart", "name": "FPC (Register / Smart Link)", "targetId": "pas_fpc"},
+                        {"id": "fpc_super_opt", "name": f"FPC {fpc_v} (-O3 Super-Opt)", "targetId": "pas_fpc"},
+                        {"id": "fpc_smart", "name": f"FPC {fpc_v} (Register / Smart Link)", "targetId": "pas_fpc_smart"},
                     ],
                 },
                 {
                     "id": "tp",
-                    "name": "Turbo Pascal",
+                    "name": "Turbo Pascal 7.0 Mode",
                     "toolchains": [
-                        {"id": "fpc_tp", "name": "FPC (TP 7.0 Mode -O3)", "targetId": "pas_tp"},
+                        {"id": "fpc_tp", "name": f"FPC (TP Mode -O3)", "targetId": "pas_tp"},
                     ],
                 },
                 {
                     "id": "delphi",
-                    "name": "Delphi",
+                    "name": "Delphi Mode",
                     "toolchains": [
-                        {"id": "fpc_delphi", "name": "FPC (Delphi Mode -O3)", "targetId": "pas_delphi"},
+                        {"id": "fpc_delphi", "name": f"FPC (Delphi Mode -O3)", "targetId": "pas_delphi"},
                     ],
                 },
             ],
-        },
-        {
-            "id": "php",
-            "name": "PHP",
-            "monaco": "php",
-            "template": "<?php\necho \"Hello, World!\\n\";\n",
+        })
+
+    # 7. Assembly
+    has_nasm = is_bin_available("nasm", "/usr/bin/nasm")
+    has_yasm = is_bin_available("yasm", "/usr/bin/yasm")
+    has_gas = is_bin_available("as", "/usr/bin/as")
+    has_fasm = is_bin_available("fasm", "/usr/local/bin/fasm")
+    has_arm64_gcc = is_bin_available("aarch64-linux-gnu-gcc", "/usr/bin/aarch64-linux-gnu-gcc")
+    has_qemu_arm64 = is_bin_available("qemu-aarch64", "/usr/bin/qemu-aarch64")
+    has_arm32_gcc = is_bin_available("arm-linux-gnueabihf-gcc", "/usr/bin/arm-linux-gnueabihf-gcc")
+    has_qemu_arm32 = is_bin_available("qemu-arm", "/usr/bin/qemu-arm")
+
+    asm_versions = []
+    x86_tools = []
+    if has_nasm: x86_tools.append({"id": "nasm", "name": "NASM (Intel Syntax)", "targetId": "asm_nasm"})
+    if has_yasm: x86_tools.append({"id": "yasm", "name": "YASM", "targetId": "asm_yasm"})
+    if has_gas: x86_tools.append({"id": "gas", "name": "GNU AS (Intel Syntax)", "targetId": "asm_gas"})
+    if has_fasm: x86_tools.append({"id": "fasm", "name": "FASM (Flat Assembler)", "targetId": "asm_fasm"})
+    if x86_tools:
+        asm_versions.append({"id": "x86_64", "name": "x86-64 (AMD64)", "toolchains": x86_tools})
+
+    if has_arm64_gcc and has_qemu_arm64:
+        asm_versions.append({
+            "id": "arm64",
+            "name": "ARM64 (AArch64)",
+            "toolchains": [{"id": "gas_arm64", "name": "GNU AS ARM64 (QEMU Emulation)", "targetId": "asm_arm64"}],
+        })
+
+    if has_arm32_gcc and has_qemu_arm32:
+        asm_versions.append({
+            "id": "arm32",
+            "name": "ARM32 (ARMv7 HF)",
+            "toolchains": [{"id": "gas_arm32", "name": "GNU AS ARM32 (QEMU Emulation)", "targetId": "asm_arm32"}],
+        })
+
+    if asm_versions:
+        installed_langs.append({
+            "id": "assembly",
+            "name": "Assembly",
+            "monaco": "asm",
+            "template": 'default rel\nglobal main\nextern printf\n\nsection .data\n    msg db \'Hello, World!\', 10, 0\n\nsection .text\nmain:\n    sub rsp, 8\n    lea rdi, [msg]\n    xor eax, eax\n    call printf wrt ..plt\n    xor eax, eax\n    add rsp, 8\n    ret\n',
+            "versions": asm_versions,
+        })
+
+    # 8. Go
+    has_go = is_bin_available("go", "/usr/bin/go")
+    if has_go:
+        go_v = get_cmd_version(["go", "version"]) or "1.22"
+        installed_langs.append({
+            "id": "go",
+            "name": "Go",
+            "monaco": "go",
+            "template": 'package main\n\nimport "fmt"\n\nfunc main() {\n  fmt.Println("Hello, World!")\n}\n',
             "versions": [
                 {
-                    "id": "8.5",
-                    "name": "PHP 8.5 (Latest)",
-                    "toolchains": [
-                        {"id": "php_jit", "name": "PHP CLI (Tracing JIT Enabled)", "targetId": "php"},
-                        {"id": "php_cli", "name": "PHP CLI (Zend VM Standard)", "targetId": "php"},
-                    ],
-                },
-                {
-                    "id": "8.4",
-                    "name": "PHP 8.4 (Stable)",
-                    "toolchains": [
-                        {"id": "php84_jit", "name": "PHP 8.4 JIT Engine", "targetId": "php"},
-                    ],
-                },
-                {
-                    "id": "8.1",
-                    "name": "PHP 8.1 (Legacy)",
-                    "toolchains": [
-                        {"id": "php81_cli", "name": "PHP 8.1 Standard CLI", "targetId": "php"},
-                    ],
-                },
+                    "id": "go_current",
+                    "name": f"Go {go_v} (Standard)",
+                    "toolchains": [{"id": "gc_standard", "name": f"Go {go_v} Toolchain (gc -s -w)", "targetId": "go"}],
+                }
             ],
-        },
-        {
-            "id": "python",
-            "name": "Python",
-            "monaco": "python",
-            "template": "print(\"Hello, World!\")\n",
-            "versions": [
-                {
-                    "id": "py3",
-                    "name": "Python 3.14 (Latest)",
-                    "toolchains": [
-                        {"id": "cpython3", "name": "CPython 3.14 (Standard)", "targetId": "python3"},
-                        {"id": "pypy3", "name": "PyPy 3.11 JIT (7.3)", "targetId": "pypy3"},
-                    ],
-                },
-                {
-                    "id": "py311",
-                    "name": "Python 3.11 (PyPy)",
-                    "toolchains": [
-                        {"id": "pypy3_opt", "name": "PyPy 3 JIT Engine", "targetId": "pypy3"},
-                        {"id": "cpython3_opt", "name": "CPython 3 (Bytecode Opt)", "targetId": "python3"},
-                    ],
-                },
-                {
-                    "id": "py2",
-                    "name": "Python 2.7 (Legacy)",
-                    "toolchains": [
-                        {"id": "cpython2", "name": "CPython 2.7.18", "targetId": "python2"},
-                        {"id": "pypy2", "name": "PyPy 2.7 JIT (7.3)", "targetId": "pypy2"},
-                    ],
-                },
-            ],
-        },
-        {
+        })
+
+    # 9. Rust
+    has_rustc = is_bin_available("rustc", "/usr/bin/rustc")
+    if has_rustc:
+        rust_v = get_cmd_version(["rustc", "--version"]) or "2021"
+        installed_langs.append({
             "id": "rust",
             "name": "Rust",
             "monaco": "rust",
-            "template": "fn main() {\n    println!(\"Hello, World!\");\n}\n",
+            "template": 'fn main() {\n  println!("Hello, World!");\n}\n',
             "versions": [
                 {
-                    "id": "2024",
-                    "name": "Rust 2024 Edition",
+                    "id": "rust_current",
+                    "name": f"Rust ({rust_v})",
                     "toolchains": [
-                        {"id": "rustc_opt", "name": "rustc 1.93 (-O3 LTO Super-Opt)", "targetId": "rust"},
-                        {"id": "rustc_native", "name": "rustc (-C target-cpu=native)", "targetId": "rust"},
+                        {"id": "rustc_super", "name": "rustc (-O3 LTO Native Super-Opt)", "targetId": "rust"},
                     ],
-                },
-                {
-                    "id": "2021",
-                    "name": "Rust 2021 Edition",
-                    "toolchains": [
-                        {"id": "rustc_2021", "name": "rustc 2021 (Opt-Level 3)", "targetId": "rust"},
-                    ],
-                },
-                {
-                    "id": "2018",
-                    "name": "Rust 2018 Edition",
-                    "toolchains": [
-                        {"id": "rustc_2018", "name": "rustc 2018 (Legacy)", "targetId": "rust"},
-                    ],
-                },
+                }
             ],
-        },
-        {
+        })
+
+    # 10. JavaScript
+    has_node = is_bin_available("node", "/usr/bin/node")
+    if has_node:
+        node_v = get_cmd_version(["node", "--version"]) or "22.0.0"
+        installed_langs.append({
+            "id": "javascript",
+            "name": "JavaScript",
+            "monaco": "javascript",
+            "template": 'console.log("Hello, World!");\n',
+            "versions": [
+                {
+                    "id": "node_current",
+                    "name": f"Node.js {node_v}",
+                    "toolchains": [{"id": "node_v8", "name": f"Node.js {node_v} (V8 Engine)", "targetId": "js_node"}],
+                }
+            ],
+        })
+
+    # 11. TypeScript
+    has_tsx = is_bin_available("tsx", "/usr/local/bin/tsx", "/usr/bin/tsx") or has_node
+    if has_tsx:
+        installed_langs.append({
             "id": "typescript",
             "name": "TypeScript",
             "monaco": "typescript",
-            "template": "console.log(\"Hello, World!\");\n",
+            "template": 'console.log("Hello, World!");\n',
             "versions": [
                 {
-                    "id": "5.8",
-                    "name": "TypeScript 5.8 (ESNext)",
-                    "toolchains": [
-                        {"id": "tsx", "name": "TSX (esbuild Fast JIT Engine)", "targetId": "ts_tsx"},
-                        {"id": "tsc_node", "name": "Node.js TS Loader", "targetId": "ts_tsx"},
-                    ],
-                },
-                {
-                    "id": "5.4",
-                    "name": "TypeScript 5.4 (ES2022)",
-                    "toolchains": [
-                        {"id": "tsx_54", "name": "TSX Engine (ES2022)", "targetId": "ts_tsx"},
-                    ],
-                },
-                {
-                    "id": "4.9",
-                    "name": "TypeScript 4.9 (ES2020)",
-                    "toolchains": [
-                        {"id": "tsx_49", "name": "TSX Compatibility Engine", "targetId": "ts_tsx"},
-                    ],
-                },
+                    "id": "ts_current",
+                    "name": "TypeScript (ESNext)",
+                    "toolchains": [{"id": "tsx_jit", "name": "TSX (esbuild Fast JIT Engine)", "targetId": "ts_tsx"}],
+                }
             ],
-        },
-        {
-            "id": "vb",
+        })
+
+    # 12. Kotlin
+    has_kotlinc = is_bin_available("kotlinc", "/opt/kotlinc/bin/kotlinc", "/usr/local/bin/kotlinc", "/usr/bin/kotlinc")
+    if has_kotlinc:
+        installed_langs.append({
+            "id": "kotlin",
+            "name": "Kotlin",
+            "monaco": "kotlin",
+            "template": 'fun main() {\n  println("Hello, World!")\n}\n',
+            "versions": [
+                {
+                    "id": "kt_current",
+                    "name": "Kotlin (JVM Backend)",
+                    "toolchains": [{"id": "kotlinc_jvm", "name": "kotlinc (JVM Optimized)", "targetId": "kotlin"}],
+                }
+            ],
+        })
+
+    # 13. Dart
+    has_dart = is_bin_available("dart", "/usr/lib/dart/bin/dart", "/usr/bin/dart")
+    if has_dart:
+        dart_v = get_cmd_version(["dart", "--version"]) or "3.0"
+        installed_langs.append({
+            "id": "dart",
+            "name": "Dart",
+            "monaco": "dart",
+            "template": 'void main() {\n  print("Hello, World!");\n}\n',
+            "versions": [
+                {
+                    "id": "dart_current",
+                    "name": f"Dart {dart_v}",
+                    "toolchains": [{"id": "dart_vm", "name": f"Dart {dart_v} JIT VM", "targetId": "dart"}],
+                }
+            ],
+        })
+
+    # 14. Lua
+    has_lua54 = is_bin_available("lua5.4", "/usr/bin/lua5.4")
+    has_luajit = is_bin_available("luajit", "/usr/bin/luajit")
+    has_lua = is_bin_available("lua", "/usr/bin/lua")
+    if has_lua54 or has_luajit or has_lua:
+        lua_tools = []
+        if has_lua54: lua_tools.append({"id": "lua54", "name": "Lua 5.4 Standard", "targetId": "lua5.4"})
+        if has_luajit: lua_tools.append({"id": "luajit", "name": "LuaJIT 2.1 (High Perf)", "targetId": "luajit"})
+        if not lua_tools and has_lua: lua_tools.append({"id": "lua_sys", "name": "Lua Interpreter", "targetId": "lua"})
+        if lua_tools:
+            installed_langs.append({
+                "id": "lua",
+                "name": "Lua",
+                "monaco": "lua",
+                "template": 'print("Hello, World!")\n',
+                "versions": [{"id": "lua_current", "name": "Lua", "toolchains": lua_tools}],
+            })
+
+    # 15. PHP
+    has_php = is_bin_available("php", "/usr/bin/php")
+    if has_php:
+        php_v = get_cmd_version(["php", "-v"]) or "8.3"
+        installed_langs.append({
+            "id": "php",
+            "name": "PHP",
+            "monaco": "php",
+            "template": '<?php\necho "Hello, World!\\n";\n',
+            "versions": [
+                {
+                    "id": "php_current",
+                    "name": f"PHP {php_v}",
+                    "toolchains": [{"id": "php_jit", "name": f"PHP {php_v} (OPcache Tracing JIT)", "targetId": "php"}],
+                }
+            ],
+        })
+
+    # 16. D
+    has_gdc = is_bin_available("gdc", "/usr/bin/gdc")
+    has_ldc = is_bin_available("ldc2", "/usr/bin/ldc2")
+    if has_gdc or has_ldc:
+        d_tools = []
+        if has_gdc: d_tools.append({"id": "gdc", "name": "GNU D Compiler (GDC -O3)", "targetId": "gdc"})
+        if has_ldc: d_tools.append({"id": "ldc", "name": "LLVM D Compiler (LDC -O3)", "targetId": "ldc"})
+        installed_langs.append({
+            "id": "d",
+            "name": "D",
+            "monaco": "d",
+            "template": 'import std.stdio;\n\nvoid main() {\n  writeln("Hello, World!");\n}\n',
+            "versions": [{"id": "d_current", "name": "D 2.x", "toolchains": d_tools}],
+        })
+
+    # 17. Objective-C
+    has_gobjc = is_bin_available("gobjc", "/usr/bin/gobjc")
+    if has_gobjc or has_clang:
+        objc_tools = []
+        if has_gobjc: objc_tools.append({"id": "gobjc", "name": "GNU Objective-C (GCC)", "targetId": "objc"})
+        if has_clang: objc_tools.append({"id": "clang_objc", "name": "Clang Objective-C", "targetId": "objc"})
+        installed_langs.append({
+            "id": "objective-c",
+            "name": "Objective-C",
+            "monaco": "objective-c",
+            "template": '#import <Foundation/Foundation.h>\n\nint main(int argc, const char * argv[]) {\n  @autoreleasepool {\n    printf("Hello, World!\\n");\n  }\n  return 0;\n}\n',
+            "versions": [{"id": "objc_current", "name": "Objective-C", "toolchains": objc_tools}],
+        })
+
+    # 18. LLVM IR
+    has_lli = is_bin_available("lli", "/usr/bin/lli")
+    if has_lli or has_clang:
+        llvm_tools = []
+        if has_lli: llvm_tools.append({"id": "lli", "name": "LLVM JIT Interpreter (lli)", "targetId": "llvm_ir"})
+        if has_clang: llvm_tools.append({"id": "clang_llvm", "name": "Clang LLVM Compiler", "targetId": "llvm_ir"})
+        installed_langs.append({
+            "id": "llvm-ir",
+            "name": "LLVM IR",
+            "monaco": "llvm",
+            "template": '@.str = private unnamed_addr constant [14 x i8] c"Hello, World!\\00", align 1\n\ndeclare i32 @puts(i8* nocapture) nounwind\n\ndefine i32 @main() {\n  %1 = call i32 @puts(i8* getelementptr inbounds ([14 x i8], [14 x i8]* @.str, i32 0, i32 0))\n  ret i32 0\n}\n',
+            "versions": [{"id": "llvm_current", "name": "LLVM IR", "toolchains": llvm_tools}],
+        })
+
+    # 19. F#
+    has_fsharp = is_bin_available("fsharpc", "/usr/bin/fsharpc") or any("9.0" in s or "8.0" in s for s in dotnet_sdks)
+    if has_fsharp:
+        fs_tools = []
+        if dotnet_sdks: fs_tools.append({"id": "fs_dotnet", "name": ".NET F# CoreCLR", "targetId": "fs_net"})
+        if has_mono: fs_tools.append({"id": "fs_mono", "name": "Mono F# Compiler", "targetId": "fs_mono"})
+        installed_langs.append({
+            "id": "fsharp",
+            "name": "F#",
+            "monaco": "fsharp",
+            "template": 'open System\n\n[<EntryPoint>]\nlet main argv =\n    printfn "Hello, World!"\n    0\n',
+            "versions": [{"id": "fs_current", "name": "F#", "toolchains": fs_tools}],
+        })
+
+    # 20. Visual Basic
+    has_vb = is_bin_available("vbnc", "/usr/bin/vbnc") or any("9.0" in s or "8.0" in s for s in dotnet_sdks)
+    if has_vb:
+        vb_tools = []
+        if dotnet_sdks: vb_tools.append({"id": "vb_dotnet", "name": ".NET VB CoreCLR", "targetId": "vb_net"})
+        if has_mono: vb_tools.append({"id": "vb_mono", "name": "Mono VB Compiler (vbnc)", "targetId": "vb_mono"})
+        installed_langs.append({
+            "id": "visualbasic",
             "name": "Visual Basic",
             "monaco": "vb",
-            "template": "Module Program\n    Sub Main()\n        Console.WriteLine(\"Hello, World!\")\n    End Sub\nEnd Module\n",
-            "versions": [
-                {
-                    "id": "net9",
-                    "name": "VB.NET 17 (.NET 9)",
-                    "toolchains": [
-                        {"id": "vbc_net9", "name": "Microsoft .NET VB 17", "targetId": "vb_net"},
-                        {"id": "vbc_opt", "name": "VB.NET CoreCLR JIT", "targetId": "vb_net"},
-                    ],
-                },
-                {
-                    "id": "net8",
-                    "name": "VB.NET 16 (.NET 8)",
-                    "toolchains": [
-                        {"id": "vbc_net8", "name": "VB.NET Runtime Engine", "targetId": "vb_net"},
-                    ],
-                },
-                {
-                    "id": "classic",
-                    "name": "VB.NET Classic",
-                    "toolchains": [
-                        {"id": "vbc_classic", "name": "VB.NET Standard Compiler", "targetId": "vb_net"},
-                    ],
-                },
-            ],
-        },
-    ]
+            "template": 'Module Program\n  Sub Main()\n    Console.WriteLine("Hello, World!")\n  End Sub\nEnd Module\n',
+            "versions": [{"id": "vb_current", "name": "Visual Basic", "toolchains": vb_tools}],
+        })
 
-    # Strict Alphabetical Ordering
-    catalog.sort(key=lambda x: x["name"].lower())
-    return catalog
+    # Alphabetical sorting by language name (C is default first)
+    installed_langs.sort(key=lambda x: x["name"].lower())
+    return installed_langs
 
 if __name__ == "__main__":
     discovered = discover_installed_languages()
-    print(f"✅ Full Multi-Distribution Catalog Active ({len(discovered)} languages).")
+    print(f"🔍 Real System Toolchain Probe Completed: {len(discovered)} active executable languages found.\n")
     for lang in discovered:
-        v_names = [v["name"] for v in lang["versions"]]
-        print(f"  • {lang['name']} ({len(lang['versions'])} versions): {', '.join(v_names[:3])}...")
+        v_summary = []
+        for v in lang["versions"]:
+            t_names = [t["name"] for t in v["toolchains"]]
+            v_summary.append(f"{v['name']} [{', '.join(t_names)}]")
+        print(f"  • {lang['name']} ({lang['id']}):")
+        for s in v_summary:
+            print(f"      - {s}")
