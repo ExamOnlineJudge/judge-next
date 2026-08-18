@@ -19,6 +19,7 @@ sudo docker run -d \
   -v /lib:/lib:ro \
   -v /lib64:/lib64:ro \
   -v /opt:/opt:ro \
+  -v /etc:/etc:ro \
   -v "${SCRIPT_DIR}:/app" \
   -w /app \
   --tmpfs /tmp:rw,exec,nosuid,size=512m \
